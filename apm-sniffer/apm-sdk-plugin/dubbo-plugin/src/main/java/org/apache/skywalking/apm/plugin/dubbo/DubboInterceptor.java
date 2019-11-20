@@ -16,7 +16,6 @@
  *
  */
 
-
 package org.apache.skywalking.apm.plugin.dubbo;
 
 import com.alibaba.dubbo.common.URL;
@@ -24,7 +23,9 @@ import com.alibaba.dubbo.rpc.Invocation;
 import com.alibaba.dubbo.rpc.Invoker;
 import com.alibaba.dubbo.rpc.Result;
 import com.alibaba.dubbo.rpc.RpcContext;
+
 import java.lang.reflect.Method;
+
 import org.apache.skywalking.apm.agent.core.context.ContextCarrier;
 import org.apache.skywalking.apm.agent.core.context.tag.Tags;
 import org.apache.skywalking.apm.agent.core.context.CarrierItem;
@@ -44,6 +45,8 @@ import org.apache.skywalking.apm.network.trace.component.ComponentsDefine;
  * @author zhangxin
  */
 public class DubboInterceptor implements InstanceMethodsAroundInterceptor {
+    private final int limit = 280;
+
     /**
      * <h2>Consumer:</h2> The serialized trace context data will
      * inject to the {@link RpcContext#attachments} for transport to provider side.
@@ -52,10 +55,10 @@ public class DubboInterceptor implements InstanceMethodsAroundInterceptor {
      * {@link RpcContext#attachments}. current trace segment will ref if the serialize context data is not null.
      */
     @Override
-    public void beforeMethod(EnhancedInstance objInst, Method method, Object[] allArguments,
-        Class<?>[] argumentsTypes, MethodInterceptResult result) throws Throwable {
-        Invoker invoker = (Invoker)allArguments[0];
-        Invocation invocation = (Invocation)allArguments[1];
+    public void beforeMethod(EnhancedInstance objInst, Method method, Object[] allArguments, Class<?>[] argumentsTypes,
+            MethodInterceptResult result) throws Throwable {
+        Invoker invoker = (Invoker) allArguments[0];
+        Invocation invocation = (Invocation) allArguments[1];
         RpcContext rpcContext = RpcContext.getContext();
         boolean isConsumer = rpcContext.isConsumerSide();
         URL requestURL = invoker.getUrl();
@@ -66,7 +69,8 @@ public class DubboInterceptor implements InstanceMethodsAroundInterceptor {
         final int port = requestURL.getPort();
         if (isConsumer) {
             final ContextCarrier contextCarrier = new ContextCarrier();
-            span = ContextManager.createExitSpan(generateOperationName(requestURL, invocation), contextCarrier, host + ":" + port);
+            span = ContextManager
+                    .createExitSpan(generateOperationName(requestURL, invocation), contextCarrier, host + ":" + port);
             //invocation.getAttachments().put("contextData", contextDataStr);
             //@see https://github.com/alibaba/dubbo/blob/dubbo-2.5.3/dubbo-rpc/dubbo-rpc-api/src/main/java/com/alibaba/dubbo/rpc/RpcInvocation.java#L154-L161
             CarrierItem next = contextCarrier.items();
@@ -85,26 +89,30 @@ public class DubboInterceptor implements InstanceMethodsAroundInterceptor {
             span = ContextManager.createEntrySpan(generateOperationName(requestURL, invocation), contextCarrier);
         }
 
-        Tags.URL.set(span, generateRequestURL(requestURL, invocation));
+        //        Tags.URL.set(span, generateRequestURL(requestURL, invocation, ""));
         span.setComponent(ComponentsDefine.DUBBO);
         SpanLayer.asRPCFramework(span);
     }
 
     @Override
-    public Object afterMethod(EnhancedInstance objInst, Method method, Object[] allArguments,
-        Class<?>[] argumentsTypes, Object ret) throws Throwable {
-        Result result = (Result)ret;
+    public Object afterMethod(EnhancedInstance objInst, Method method, Object[] allArguments, Class<?>[] argumentsTypes,
+            Object ret) throws Throwable {
+        Invoker invoker = (Invoker) allArguments[0];
+        Invocation invocation = (Invocation) allArguments[1];
+        URL requestURL = invoker.getUrl();
+        Result result = (Result) ret;
+        AbstractSpan span = ContextManager.activeSpan();
+        Tags.URL.set(span, generateRequestURL(requestURL, invocation, String.valueOf(result.getValue())));
         if (result != null && result.getException() != null) {
             dealException(result.getException());
         }
-
         ContextManager.stopSpan();
         return ret;
     }
 
     @Override
     public void handleMethodException(EnhancedInstance objInst, Method method, Object[] allArguments,
-        Class<?>[] argumentsTypes, Throwable t) {
+            Class<?>[] argumentsTypes, Throwable t) {
         dealException(t);
     }
 
@@ -133,9 +141,14 @@ public class DubboInterceptor implements InstanceMethodsAroundInterceptor {
         if (invocation.getParameterTypes().length > 0) {
             operationName.delete(operationName.length() - 1, operationName.length());
         }
-
         operationName.append(")");
-
+        operationName.append("#in_parameter:");
+        for (Object object : invocation.getArguments()) {
+            operationName.append(String.valueOf(object) + ",");
+        }
+        if (operationName.toString().length() > limit) {
+            return operationName.toString().substring(0, limit);
+        }
         return operationName.toString();
     }
 
@@ -145,12 +158,31 @@ public class DubboInterceptor implements InstanceMethodsAroundInterceptor {
      *
      * @return request url.
      */
-    private String generateRequestURL(URL url, Invocation invocation) {
+    private String generateRequestURL(URL url, Invocation invocation, String out) {
         StringBuilder requestURL = new StringBuilder();
         requestURL.append(url.getProtocol() + "://");
         requestURL.append(url.getHost());
         requestURL.append(":" + url.getPort() + "/");
-        requestURL.append(generateOperationName(url, invocation));
+        requestURL.append(generateOutOperationName(url, invocation, out));
+        if (requestURL.toString().length() > limit) {
+            return requestURL.toString().substring(0, limit);
+        }
         return requestURL.toString();
+    }
+
+    private String generateOutOperationName(URL requestURL, Invocation invocation, String out) {
+        StringBuilder operationName = new StringBuilder();
+        operationName.append(requestURL.getPath());
+        operationName.append("." + invocation.getMethodName() + "(");
+        for (Class<?> classes : invocation.getParameterTypes()) {
+            operationName.append(classes.getSimpleName() + ",");
+        }
+
+        if (invocation.getParameterTypes().length > 0) {
+            operationName.delete(operationName.length() - 1, operationName.length());
+        }
+        operationName.append(")");
+        operationName.append("#out_parameter:").append(out);
+        return operationName.toString();
     }
 }
