@@ -103,6 +103,9 @@ public class StorageEsInstaller extends ModelInstaller {
         setting.addProperty("index.number_of_replicas", indexReplicasNumber);
         setting.addProperty("index.refresh_interval", record ? TimeValue.timeValueSeconds(10).toString() : TimeValue.timeValueSeconds(indexRefreshInterval).toString());
         setting.addProperty("analysis.analyzer.oap_analyzer.type", "stop");
+        setting.addProperty("index.translog.durability", "async");
+        setting.addProperty("index.translog.flush_threshold_size", "1024mb");
+        setting.addProperty("index.translog.sync_interval", "60s");
         return setting;
     }
 
